@@ -17,16 +17,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # FastAPIアプリケーション
-app = FastAPI(title="LINE MCP Server", version="1.0.0")
+app = FastAPI(title="LINE MCP Server", version="2.0.0")
 
 # 環境変数から認証情報を取得
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 GROUP_ID = os.getenv("LINE_GROUP_ID")
+PERSONAL_USER_ID = os.getenv("LINE_PERSONAL_USER_ID")
 
 if not CHANNEL_ACCESS_TOKEN:
     logger.warning("LINE_CHANNEL_ACCESS_TOKEN is not set")
 if not GROUP_ID:
     logger.warning("LINE_GROUP_ID is not set")
+if not PERSONAL_USER_ID:
+    logger.warning("LINE_PERSONAL_USER_ID is not set")
 
 
 def send_line_message(message: str, group_id: str = None) -> dict:
@@ -91,8 +94,8 @@ async def root():
     """ルートエンドポイント"""
     return {
         "name": "LINE MCP Server",
-        "version": "1.0.0",
-        "description": "MCP server for sending messages to LINE groups"
+        "version": "2.0.0",
+        "description": "MCP server for sending messages to LINE groups and personal chats"
     }
 
 
@@ -102,8 +105,60 @@ async def health_check():
     return {
         "status": "healthy",
         "channel_token_configured": bool(CHANNEL_ACCESS_TOKEN),
-        "group_id_configured": bool(GROUP_ID)
+        "group_id_configured": bool(GROUP_ID),
+        "personal_user_id_configured": bool(PERSONAL_USER_ID)
     }
+
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    """
+    LINE Webhook エンドポイント
+    ユーザーからのメッセージを受信してUser IDをログに記録
+    """
+    try:
+        body = await request.json()
+        logger.info(f"Webhook received: {json.dumps(body, ensure_ascii=False)}")
+        
+        # イベント処理
+        events = body.get("events", [])
+        for event in events:
+            event_type = event.get("type")
+            source = event.get("source", {})
+            
+            if event_type == "message":
+                user_id = source.get("userId")
+                group_id = source.get("groupId")
+                message_text = event.get("message", {}).get("text", "")
+                
+                logger.info(f"===== USER ID DETECTED =====")
+                logger.info(f"User ID: {user_id}")
+                if group_id:
+                    logger.info(f"Group ID: {group_id}")
+                logger.info(f"Message: {message_text}")
+                logger.info(f"============================")
+                
+                # 自動返信（オプション）
+                if user_id and "userid" in message_text.lower():
+                    reply_token = event.get("replyToken")
+                    if reply_token:
+                        reply_message = f"あなたのUser IDは: {user_id}"
+                        reply_url = "https://api.line.me/v2/bot/message/reply"
+                        reply_headers = {
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"
+                        }
+                        reply_payload = {
+                            "replyToken": reply_token,
+                            "messages": [{"type": "text", "text": reply_message}]
+                        }
+                        requests.post(reply_url, headers=reply_headers, json=reply_payload)
+        
+        return JSONResponse({"status": "ok"})
+    
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
 @app.post("/mcp")
@@ -121,7 +176,7 @@ async def mcp_endpoint(request: Request):
                 "tools": [
                     {
                         "name": "send_line_message",
-                        "description": "LINEグループにメッセージを送信します",
+                        "description": "LINEグループまたは個人にメッセージを送信します",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -129,9 +184,18 @@ async def mcp_endpoint(request: Request):
                                     "type": "string",
                                     "description": "送信するメッセージ"
                                 },
+                                "target": {
+                                    "type": "string",
+                                    "description": "送信先: 'group'（グループ）または 'personal'（個人）。省略時はグループ",
+                                    "enum": ["group", "personal"]
+                                },
                                 "group_id": {
                                     "type": "string",
-                                    "description": "グループID（省略時はデフォルトのグループに送信）"
+                                    "description": "グループID（targetがgroupの場合に使用。省略時はデフォルトのグループ）"
+                                },
+                                "user_id": {
+                                    "type": "string",
+                                    "description": "ユーザーID（targetがpersonalの場合に使用。省略時はデフォルトのユーザー）"
                                 }
                             },
                             "required": ["message"]
@@ -148,7 +212,9 @@ async def mcp_endpoint(request: Request):
             
             if tool_name == "send_line_message":
                 message = arguments.get("message")
+                target = arguments.get("target", "group")
                 group_id = arguments.get("group_id")
+                user_id = arguments.get("user_id")
                 
                 if not message:
                     return JSONResponse({
@@ -163,7 +229,25 @@ async def mcp_endpoint(request: Request):
                         ]
                     })
                 
-                result = send_line_message(message, group_id)
+                # 送信先を決定
+                if target == "personal":
+                    target_id = user_id or PERSONAL_USER_ID
+                    if not target_id:
+                        return JSONResponse({
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps({
+                                        "success": False,
+                                        "error": "PERSONAL_USER_ID is not configured"
+                                    })
+                                }
+                            ]
+                        })
+                else:
+                    target_id = group_id or GROUP_ID
+                
+                result = send_line_message(message, target_id)
                 
                 return JSONResponse({
                     "content": [
