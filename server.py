@@ -169,24 +169,32 @@ async def mcp_endpoint(request: Request):
     try:
         body = await request.json()
         method = body.get("method")
+        request_id = body.get("id")
         
         if method == "initialize":
             # MCPプロトコルの初期化
             return JSONResponse({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {}
-                },
-                "serverInfo": {
-                    "name": "LINE MCP Server",
-                    "version": "2.0.0"
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": {}
+                    },
+                    "serverInfo": {
+                        "name": "LINE MCP Server",
+                        "version": "2.0.0"
+                    }
                 }
             })
         
         elif method == "tools/list":
             # 利用可能なツールのリストを返す
             return JSONResponse({
-                "tools": [
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "tools": [
                     {
                         "name": "send_line_message",
                         "description": "LINEグループまたは個人にメッセージを送信します",
@@ -215,6 +223,7 @@ async def mcp_endpoint(request: Request):
                         }
                     }
                 ]
+                }
             })
         
         elif method == "tools/call":
@@ -231,15 +240,19 @@ async def mcp_endpoint(request: Request):
                 
                 if not message:
                     return JSONResponse({
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json.dumps({
-                                    "success": False,
-                                    "error": "message parameter is required"
-                                })
-                            }
-                        ]
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps({
+                                        "success": False,
+                                        "error": "message parameter is required"
+                                    })
+                                }
+                            ]
+                        }
                     })
                 
                 # 送信先を決定
@@ -247,15 +260,19 @@ async def mcp_endpoint(request: Request):
                     target_id = user_id or PERSONAL_USER_ID
                     if not target_id:
                         return JSONResponse({
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": json.dumps({
-                                        "success": False,
-                                        "error": "PERSONAL_USER_ID is not configured"
-                                    })
-                                }
-                            ]
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": json.dumps({
+                                            "success": False,
+                                            "error": "PERSONAL_USER_ID is not configured"
+                                        })
+                                    }
+                                ]
+                            }
                         })
                 else:
                     target_id = group_id or GROUP_ID
@@ -263,29 +280,39 @@ async def mcp_endpoint(request: Request):
                 result = send_line_message(message, target_id)
                 
                 return JSONResponse({
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result, ensure_ascii=False)
-                        }
-                    ]
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(result, ensure_ascii=False)
+                            }
+                        ]
+                    }
                 })
             
             else:
                 return JSONResponse({
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps({
-                                "success": False,
-                                "error": f"Unknown tool: {tool_name}"
-                            })
-                        }
-                    ]
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps({
+                                    "success": False,
+                                    "error": f"Unknown tool: {tool_name}"
+                                })
+                            }
+                        ]
+                    }
                 })
         
         else:
             return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": request_id,
                 "error": {
                     "code": -32601,
                     "message": f"Method not found: {method}"
@@ -295,6 +322,8 @@ async def mcp_endpoint(request: Request):
     except Exception as e:
         logger.error(f"Error processing MCP request: {e}")
         return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": body.get("id") if "body" in locals() else None,
             "error": {
                 "code": -32603,
                 "message": f"Internal error: {str(e)}"
