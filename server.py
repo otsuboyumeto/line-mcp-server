@@ -170,7 +170,20 @@ async def mcp_endpoint(request: Request):
         body = await request.json()
         method = body.get("method")
         
-        if method == "tools/list":
+        if method == "initialize":
+            # MCPプロトコルの初期化
+            return JSONResponse({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {}
+                },
+                "serverInfo": {
+                    "name": "LINE MCP Server",
+                    "version": "2.0.0"
+                }
+            })
+        
+        elif method == "tools/list":
             # 利用可能なツールのリストを返す
             return JSONResponse({
                 "tools": [
