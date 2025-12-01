@@ -2,13 +2,14 @@
 """
 LINE Messaging API MCP Server
 ManusからLINEグループにメッセージを送信するためのMCPサーバー
+MCPプロトコル完全準拠版
 """
 
 import os
 import json
 import logging
 from typing import Any
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 import requests
 
@@ -17,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # FastAPIアプリケーション
-app = FastAPI(title="LINE MCP Server", version="2.0.0")
+app = FastAPI(title="LINE MCP Server", version="2.2.0")
 
 # 環境変数から認証情報を取得
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
@@ -32,23 +33,21 @@ if not PERSONAL_USER_ID:
     logger.warning("LINE_PERSONAL_USER_ID is not set")
 
 
-def send_line_message(message: str, group_id: str = None) -> dict:
+def send_line_message(message: str, target_id: str) -> dict:
     """
-    LINEグループにメッセージを送信
+    LINEグループまたは個人にメッセージを送信
     
     Args:
         message: 送信するメッセージ
-        group_id: グループID（省略時は環境変数のGROUP_IDを使用）
+        target_id: 送信先ID（グループIDまたはユーザーID）
     
     Returns:
         送信結果の辞書
     """
-    target_group_id = group_id or GROUP_ID
-    
-    if not target_group_id:
+    if not target_id:
         return {
             "success": False,
-            "error": "GROUP_ID is not configured"
+            "error": "target_id is not provided"
         }
     
     if not CHANNEL_ACCESS_TOKEN:
@@ -63,7 +62,7 @@ def send_line_message(message: str, group_id: str = None) -> dict:
         "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"
     }
     payload = {
-        "to": target_group_id,
+        "to": target_id,
         "messages": [
             {
                 "type": "text",
@@ -79,7 +78,7 @@ def send_line_message(message: str, group_id: str = None) -> dict:
         return {
             "success": True,
             "message": "Message sent successfully",
-            "group_id": target_group_id
+            "target_id": target_id
         }
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to send LINE message: {e}")
@@ -94,8 +93,9 @@ async def root():
     """ルートエンドポイント"""
     return {
         "name": "LINE MCP Server",
-        "version": "2.0.0",
-        "description": "MCP server for sending messages to LINE groups and personal chats"
+        "version": "2.2.0",
+        "description": "MCP server for sending messages to LINE groups and personal chats",
+        "protocol": "MCP Streamable HTTP"
     }
 
 
@@ -164,15 +164,30 @@ async def webhook(request: Request):
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
     """
-    MCPプロトコルのメインエンドポイント
+    MCPプロトコルのメインエンドポイント（Streamable HTTP準拠）
     """
     try:
         body = await request.json()
         method = body.get("method")
-        request_id = body.get("id")
+        request_id = body.get("id")  # 通知の場合はNone
         
+        logger.info(f"MCP request: method={method}, id={request_id}")
+        
+        # 通知の処理（idフィールドがない場合）
+        if request_id is None:
+            # MCPプロトコルの仕様：通知にはHTTP 202 Acceptedを返す
+            if method == "notifications/initialized":
+                logger.info("Received initialized notification")
+                return Response(status_code=202)
+            else:
+                # 未知の通知も202で受け入れる
+                logger.info(f"Received unknown notification: {method}")
+                return Response(status_code=202)
+        
+        # リクエストの処理（idフィールドがある場合）
         if method == "initialize":
             # MCPプロトコルの初期化
+            logger.info("Processing initialize request")
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -182,57 +197,54 @@ async def mcp_endpoint(request: Request):
                         "tools": {}
                     },
                     "serverInfo": {
-                        "name": "LINE MCP Server",
-                        "version": "2.1.0"
+                        "name": "line-messaging",
+                        "version": "2.2.0"
                     }
                 }
             })
         
-        elif method == "initialized":
-            # 初期化完了通知（レスポンス不要）
-            # この通知にはidが含まれないため、空のレスポンスを返す
-            return JSONResponse({}, status_code=200)
-        
         elif method == "tools/list":
             # 利用可能なツールのリストを返す
+            logger.info("Processing tools/list request")
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
                     "tools": [
-                    {
-                        "name": "send_line_message",
-                        "description": "LINEグループまたは個人にメッセージを送信します",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string",
-                                    "description": "送信するメッセージ"
+                        {
+                            "name": "send_line_message",
+                            "description": "LINEグループまたは個人にメッセージを送信します",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "message": {
+                                        "type": "string",
+                                        "description": "送信するメッセージ"
+                                    },
+                                    "target": {
+                                        "type": "string",
+                                        "description": "送信先: 'group'（グループ）または 'personal'（個人）。省略時はグループ",
+                                        "enum": ["group", "personal"]
+                                    },
+                                    "group_id": {
+                                        "type": "string",
+                                        "description": "グループID（targetがgroupの場合に使用。省略時はデフォルトのグループ）"
+                                    },
+                                    "user_id": {
+                                        "type": "string",
+                                        "description": "ユーザーID（targetがpersonalの場合に使用。省略時はデフォルトのユーザー）"
+                                    }
                                 },
-                                "target": {
-                                    "type": "string",
-                                    "description": "送信先: 'group'（グループ）または 'personal'（個人）。省略時はグループ",
-                                    "enum": ["group", "personal"]
-                                },
-                                "group_id": {
-                                    "type": "string",
-                                    "description": "グループID（targetがgroupの場合に使用。省略時はデフォルトのグループ）"
-                                },
-                                "user_id": {
-                                    "type": "string",
-                                    "description": "ユーザーID（targetがpersonalの場合に使用。省略時はデフォルトのユーザー）"
-                                }
-                            },
-                            "required": ["message"]
+                                "required": ["message"]
+                            }
                         }
-                    }
-                ]
+                    ]
                 }
             })
         
         elif method == "tools/call":
             # ツールを実行
+            logger.info("Processing tools/call request")
             params = body.get("params", {})
             tool_name = params.get("name")
             arguments = params.get("arguments", {})
@@ -315,6 +327,8 @@ async def mcp_endpoint(request: Request):
                 })
         
         else:
+            # 未知のメソッド
+            logger.warning(f"Unknown method: {method}")
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -325,7 +339,7 @@ async def mcp_endpoint(request: Request):
             }, status_code=404)
     
     except Exception as e:
-        logger.error(f"Error processing MCP request: {e}")
+        logger.error(f"Error processing MCP request: {e}", exc_info=True)
         return JSONResponse({
             "jsonrpc": "2.0",
             "id": body.get("id") if "body" in locals() else None,
@@ -333,6 +347,41 @@ async def mcp_endpoint(request: Request):
                 "code": -32603,
                 "message": f"Internal error: {str(e)}"
             }
+        }, status_code=500)
+
+
+@app.post("/")
+async def direct_send(request: Request):
+    """
+    直接HTTP POSTでメッセージを送信するエンドポイント（curlコマンド用）
+    """
+    try:
+        body = await request.json()
+        message = body.get("message")
+        target = body.get("target", "group")
+        group_id = body.get("group_id")
+        user_id = body.get("user_id")
+        
+        if not message:
+            return JSONResponse({
+                "success": False,
+                "error": "message parameter is required"
+            }, status_code=400)
+        
+        # 送信先を決定
+        if target == "personal":
+            target_id = user_id or PERSONAL_USER_ID
+        else:
+            target_id = group_id or GROUP_ID
+        
+        result = send_line_message(message, target_id)
+        return JSONResponse(result)
+    
+    except Exception as e:
+        logger.error(f"Error in direct send: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
         }, status_code=500)
 
 
