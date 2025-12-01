@@ -183,10 +183,15 @@ async def mcp_endpoint(request: Request):
                     },
                     "serverInfo": {
                         "name": "LINE MCP Server",
-                        "version": "2.0.0"
+                        "version": "2.1.0"
                     }
                 }
             })
+        
+        elif method == "initialized":
+            # 初期化完了通知（レスポンス不要）
+            # この通知にはidが含まれないため、空のレスポンスを返す
+            return JSONResponse({}, status_code=200)
         
         elif method == "tools/list":
             # 利用可能なツールのリストを返す
